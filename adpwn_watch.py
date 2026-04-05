@@ -54,7 +54,7 @@ except ImportError:
 DEFAULT_HOST        = 'localhost'
 DEFAULT_PORT        = 8765
 POLL_INTERVAL       = 1.0
-WATCH_SUFFIX        = '.raw'
+WATCH_SUFFIX        = ('.raw', '.log', '.txt', '.out', '.typescript', '')
 SESSION_REPLAY_MINS = 240
 MAX_FILE_SIZE       = 100 * 1024 * 1024
 
@@ -89,7 +89,7 @@ def should_watch(path):
     try:
         if p.stat().st_size > MAX_FILE_SIZE: return False
     except: return False
-    return p.name.lower().endswith(WATCH_SUFFIX)
+    return p.name.lower().endswith(WATCH_SUFFIX) or not p.suffix  # no extension = watch it too
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 async def sha256hex(s):
@@ -150,7 +150,10 @@ def _send_line(line):
     asyncio.run_coroutine_threadsafe(_ws_send(ws, line), loop)
 
 async def _ws_send(ws, line):
-    try: await ws.send(json.dumps({'type': 'log_lines', 'text': line}))
+    try:
+        msg = json.dumps({'type': 'log_lines', 'text': line})
+        if len(msg.encode('utf-8')) < 900_000:
+            await ws.send(msg)
     except: pass
 
 def read_new_lines(filepath):
@@ -238,7 +241,7 @@ async def main(args):
     now = time.time()
     existing = sorted(
         f for f in (target.rglob('*') if target.is_dir() else [target])
-        if f.is_file() and should_watch(str(f))
+        if f.is_file() and (not target.is_dir() or should_watch(str(f)))
     )
     for ef in existing:
         fp = str(ef.resolve())
@@ -265,7 +268,7 @@ async def main(args):
     while True:
         try:
             log(f'[~] Connecting to {ws_url} as {name}…')
-            async with ws_connect(ws_url) as ws:
+            async with ws_connect(ws_url, max_size=10*1024*1024) as ws:
                 if not await do_auth(ws, name, password):
                     log('[!] Auth failed — waiting 10s before retry')
                     await asyncio.sleep(10)
@@ -287,8 +290,20 @@ async def main(args):
                         if age_mins > SESSION_REPLAY_MINS: continue
                         lines = slurp(ef)
                         if lines:
-                            batch = '\n'.join(lines)
-                            await ws.send(json.dumps({'type':'log_lines','text':batch}))
+                            # Chunk to stay under WS frame limit (~900 KB per message)
+                            CHUNK = 500
+                            sent = 0
+                            for i in range(0, len(lines), CHUNK):
+                                batch = '\n'.join(lines[i:i+CHUNK])
+                                if len(batch.encode('utf-8')) > 900_000:
+                                    # Further split if chunk still too big
+                                    for line in lines[i:i+CHUNK]:
+                                        try:
+                                            await ws.send(json.dumps({'type':'log_lines','text':line}))
+                                        except: pass
+                                else:
+                                    await ws.send(json.dumps({'type':'log_lines','text':batch}))
+                                sent += min(CHUNK, len(lines)-i)
                             log(f'  replayed {len(lines)} lines from {ef.name}')
                     except Exception as e:
                         log(f'  [replay] {ef.name}: {e}')
