@@ -3,7 +3,9 @@ Self contained Active Directory Helper
 
 ## Starting Server:
 
-```python3 adpwn_server.py --html adpwn.html --password ops2024```
+This has been updated, screenshots may not reflect
+
+```python3 adpwn_bake.py --html adpwn.html --attacks yaml/upload_attacks.yaml```
 
 ![alt text](images/image.png)
 
